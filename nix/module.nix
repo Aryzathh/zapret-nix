@@ -22,32 +22,12 @@ let
 
   # The upstream scripts are not wrapped by every zapret package (the nixpkgs
   # package does not wrap them), so give them a complete, deterministic PATH.
-  runtimeDeps = with pkgs; [
-    bash
-    bind.dnsutils
-    bind.host
-    coreutils
-    curl
-    findutils
-    gawk
-    gnugrep
-    gnused
-    gnutar
-    gzip
-    iproute2
-    ipset
-    iptables
-    iputils
-    jq
-    netcat-openbsd
-    nftables
-    openssl
-    procps
-    psmisc
-    util-linux
-    wget
-  ];
+  runtimeDeps = import ./runtime-deps.nix pkgs;
 
+  # Used only when neither `strategy` nor `params` is set.  These mirror the
+  # default NFQWS_OPT groups shipped by upstream's config.default, so enabling
+  # the service without a tuned strategy behaves like a stock upstream install.
+  # A warning is emitted in that case (see `warnings` below).
   defaultStrategyGroups = [
     "--filter-tcp=80 --dpi-desync=fake,multisplit --dpi-desync-split-pos=method+2 --dpi-desync-fooling=md5sig <HOSTLIST>"
     "--filter-tcp=443 --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1,midsld --dpi-desync-fooling=badseq,md5sig <HOSTLIST>"
@@ -71,7 +51,12 @@ let
     else
       "${group} <HOSTLIST>";
 
-  strategyWithHostlists = lib.concatMapStringsSep " --new " appendHostlist effectiveStrategyGroups;
+  # extraArgs are appended to the last group verbatim (as documented) and the
+  # whole value is shell-escaped once, so arbitrary arguments cannot break or
+  # inject into the generated /var/lib/zapret/config.
+  strategyWithHostlists = lib.concatStringsSep " " (
+    [ (lib.concatMapStringsSep " --new " appendHostlist effectiveStrategyGroups) ] ++ cfg.extraArgs
+  );
 
   whitelistFile = pkgs.writeText "zapret-hosts-user.txt" (
     lib.concatStringsSep "\n" cfg.whitelist + "\n"
@@ -130,9 +115,6 @@ let
   ''
   + lib.optionalString (cfg.wanInterfaces != [ ]) ''
     IFACE_WAN=${lib.escapeShellArg (lib.concatStringsSep " " cfg.wanInterfaces)}
-  ''
-  + lib.optionalString (cfg.extraArgs != [ ]) ''
-    NFQWS_OPT="$NFQWS_OPT ${lib.concatStringsSep " " cfg.extraArgs}"
   ''
   + lib.optionalString (cfg.extraConfig != "") ''
     ${cfg.extraConfig}
@@ -228,10 +210,14 @@ in
         `<HOSTLIST>` marker to each one (unless `<HOSTLIST>` or
         `<HOSTLIST_NOAUTO>` is already present).
 
-        If both {option}`strategy` and {option}`params` are empty, the
-        upstream default {env}`NFQWS_OPT` is used. There is no universal
-        strategy: start {option}`zapret-blockcheck.service`, copy the reported
-        nfqws line here, and rebuild.
+        If both {option}`strategy` and {option}`params` are empty, the module
+        falls back to a built-in set of three groups (TCP 80, TCP 443 and
+        UDP 443) that mirrors upstream's stock {env}`NFQWS_OPT`, and a
+        warning is printed at evaluation time. With the default
+        {option}`filterMode` (`none`) these groups apply to *all* traffic on
+        the configured ports. There is no universal strategy: start
+        {option}`zapret-blockcheck.service`, copy the reported nfqws line
+        here, and rebuild.
       '';
     };
 
@@ -380,7 +366,7 @@ in
       default = null;
       example = 200;
       description = ''
-        Compatibility alias for {option}`queueNum` matching nixpkgs'
+        Alias for {option}`queueNum` using nixpkgs' option name
         `services.zapret.qnum`. When non-null, overrides {option}`queueNum`.
       '';
     };
@@ -390,9 +376,11 @@ in
       default = true;
       description = ''
         Whether to apply and remove upstream nftables/iptables firewall rules
-        (`INIT_APPLY_FW`) when starting and stopping the service. Compatible
-        with nixpkgs' `services.zapret.configureFirewall`, and works with both
-        `nftables` and `iptables`.
+        (`INIT_APPLY_FW`) when starting and stopping the service. When
+        `false`, the module never touches the firewall, neither on start nor
+        on stop. Same option name as nixpkgs'
+        `services.zapret.configureFirewall`; works with both `nftables` and
+        `iptables`.
       '';
     };
 
@@ -400,9 +388,11 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Whether to keep HTTP port 80 in {option}`tcpPorts` (compatible with
-        nixpkgs' `services.zapret.httpSupport`). When `false`, port `80` is
-        filtered out of `NFQWS_PORTS_TCP`.
+        Whether port 80 is kept in {option}`tcpPorts`. When `false`, port `80`
+        is filtered out of `NFQWS_PORTS_TCP`; when `true` it is *not* added if
+        absent from {option}`tcpPorts`. Same option name as nixpkgs'
+        `services.zapret.httpSupport`, but with different semantics and a
+        different default (`true` here, `false` in nixpkgs).
       '';
     };
 
@@ -414,7 +404,7 @@ in
       default = "first";
       example = "full";
       description = ''
-        HTTP packet processing mode (compatible with nixpkgs'
+        HTTP packet processing mode (same option name as nixpkgs'
         `services.zapret.httpMode`). `first` applies the connbytes limiter;
         `full` sets `NFQWS_PORTS_TCP_KEEPALIVE=80` to process all packets in
         HTTP keep-alive sessions.
@@ -425,9 +415,11 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Whether to route UDP ports in {option}`udpPorts` to nfqueue (compatible
-        with nixpkgs' `services.zapret.udpSupport`). Set to `false` to disable
-        UDP redirection without clearing {option}`udpPorts`.
+        Whether to route UDP ports in {option}`udpPorts` to nfqueue. Set to
+        `false` to disable UDP redirection without clearing {option}`udpPorts`.
+        Same option name as nixpkgs' `services.zapret.udpSupport`, but the
+        default differs (`true` here, `false` in nixpkgs, whose `udpPorts`
+        also defaults to `[ ]`).
       '';
     };
 
@@ -510,6 +502,14 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    warnings = lib.optional (userStrategyGroups == [ ]) ''
+      services.zapret: neither `strategy` nor `params` is set, so the built-in
+      default strategy is applied to all traffic on the configured ports
+      (filterMode = "${cfg.filterMode}"). Run `systemctl start
+      zapret-blockcheck` to discover a strategy that works on your network and
+      declare it in `services.zapret.strategy`.
+    '';
+
     systemd.services.zapret = {
       description = "Zapret DPI bypass (nfqws)";
       wantedBy = [ "multi-user.target" ];
@@ -542,42 +542,52 @@ in
       # upstream runtime files never try to write to an immutable store path.
       preStart = stateSetup;
 
-      serviceConfig = commonHardening // {
-        Type = "forking";
-        # The upstream init script writes /var/run/nfqws3.pid and starts the
-        # daemon in the background.  Tracking PIDFile ensures systemd detects
-        # daemon crashes or invalid strategy arguments immediately.
-        PIDFile = "/run/nfqws3.pid";
-        ExecStart = "${cfg.package}/bin/zapret start";
-        ExecReload = "${cfg.package}/bin/zapret restart";
-        ExecStop = "${cfg.package}/bin/zapret stop";
-        ExecStopPost = "-${cfg.package}/bin/zapret stop-fw";
-        Restart = "on-failure";
-        RestartSec = 5;
+      serviceConfig =
+        commonHardening
+        // {
+          Type = "forking";
+          # The upstream init script writes /var/run/nfqws3.pid and starts the
+          # daemon in the background.  Tracking PIDFile ensures systemd detects
+          # daemon crashes or invalid strategy arguments immediately.
+          PIDFile = "/run/nfqws3.pid";
+          ExecStart = "${cfg.package}/bin/zapret start";
+          # SIGHUP makes nfqws re-read its hostlists in place: the PID that
+          # systemd tracks via PIDFile stays valid, and the firewall is untouched.
+          # Option changes restart the unit through restartTriggers instead.
+          ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
+          ExecStop = "${cfg.package}/bin/zapret stop";
+        }
+        // lib.optionalAttrs cfg.configureFirewall {
+          # Only clean up firewall rules we are responsible for.
+          ExecStopPost = "-${cfg.package}/bin/zapret stop-fw";
+        }
+        // {
+          Restart = "on-failure";
+          RestartSec = 5;
 
-        StateDirectory = "zapret";
-        StateDirectoryMode = "0755";
+          StateDirectory = "zapret";
+          StateDirectoryMode = "0755";
 
-        # Root is needed to create nftables/iptables rules and nfqueue
-        # sockets.  nfqws itself drops to the unprivileged `nobody` user
-        # (WS_USER) and drops all capabilities except NET_ADMIN/NET_RAW.
-        CapabilityBoundingSet = capabilityBoundingSet;
-        RestrictAddressFamilies = [
-          "AF_INET"
-          "AF_INET6"
-          "AF_NETLINK"
-          "AF_UNIX"
-        ];
+          # Root is needed to create nftables/iptables rules and nfqueue
+          # sockets.  nfqws itself drops to the unprivileged `nobody` user
+          # (WS_USER) and drops all capabilities except NET_ADMIN/NET_RAW.
+          CapabilityBoundingSet = capabilityBoundingSet;
+          RestrictAddressFamilies = [
+            "AF_INET"
+            "AF_INET6"
+            "AF_NETLINK"
+            "AF_UNIX"
+          ];
 
-        # udev/xtables use /run; StateDirectory covers /var/lib/zapret.
-        ReadWritePaths = [ "/run" ];
+          # udev/xtables use /run; StateDirectory covers /var/lib/zapret.
+          ReadWritePaths = [ "/run" ];
 
-        # autohostlist writes net.netfilter.nf_conntrack_tcp_be_liberal.
-        ProtectKernelTunables = cfg.filterMode != "autohostlist";
+          # autohostlist writes net.netfilter.nf_conntrack_tcp_be_liberal.
+          ProtectKernelTunables = cfg.filterMode != "autohostlist";
 
-        TimeoutStartSec = 60;
-        TimeoutStopSec = 30;
-      };
+          TimeoutStartSec = 60;
+          TimeoutStopSec = 30;
+        };
     };
 
     systemd.services.zapret-blockcheck = lib.mkIf (cfg.blockcheckDomain != null) {

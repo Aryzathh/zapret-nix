@@ -17,7 +17,7 @@
       packages = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = nixpkgs.legacyPackages.${system};
           package = pkgs.callPackage ./nix/package.nix { };
         in
         {
@@ -59,7 +59,7 @@
       formatter = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = nixpkgs.legacyPackages.${system};
         in
         pkgs.nixfmt-tree
       );
@@ -67,7 +67,7 @@
       devShells = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = nixpkgs.legacyPackages.${system};
         in
         {
           default = pkgs.mkShellNoCC {

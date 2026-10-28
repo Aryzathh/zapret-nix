@@ -3,30 +3,9 @@
   stdenv,
   fetchFromGitHub,
   makeWrapper,
-
-  bash,
-  bind,
   cacert,
-  coreutils,
-  curl,
-  findutils,
-  gawk,
-  gnugrep,
-  gnused,
-  gnutar,
-  gzip,
-  iproute2,
-  ipset,
-  iptables,
-  iputils,
-  jq,
-  netcat-openbsd,
-  nftables,
-  openssl,
-  procps,
-  psmisc,
-  util-linux,
-  wget,
+  bash,
+  pkgs,
 
   libcap,
   zlib,
@@ -36,31 +15,7 @@
 }:
 
 let
-  runtimeDeps = [
-    bash
-    bind.dnsutils
-    bind.host
-    coreutils
-    curl
-    findutils
-    gawk
-    gnugrep
-    gnused
-    gnutar
-    gzip
-    iproute2
-    ipset
-    iptables
-    iputils
-    jq
-    netcat-openbsd
-    nftables
-    openssl
-    procps
-    psmisc
-    util-linux
-    wget
-  ];
+  runtimeDeps = import ./runtime-deps.nix pkgs;
 
   runtimePath = lib.makeBinPath runtimeDeps;
   caBundle = "${cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -173,6 +128,12 @@ stdenv.mkDerivation (finalAttrs: {
 
   meta = {
     description = "DPI bypass multi platform (zapret-nix packaging)";
+    maintainers = [
+      {
+        name = "Aryzathh";
+        github = "Aryzathh";
+      }
+    ];
     homepage = "https://github.com/Aryzathh/zapret-nix";
     changelog = "https://github.com/bol-van/zapret/releases/tag/${finalAttrs.src.tag}";
     license = lib.licenses.mit;

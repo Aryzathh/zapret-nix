@@ -2,6 +2,11 @@ version: 2
 
 updates:
   - package-ecosystem: github-actions
-    directory: ./
+    directory: /
     schedule:
-      interval: daily
+      interval: weekly
+
+  - package-ecosystem: nix
+    directory: /
+    schedule:
+      interval: weekly

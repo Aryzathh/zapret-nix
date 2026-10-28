@@ -27,7 +27,7 @@ Imperative DPI-bypass installers mutate `/etc/resolv.conf`, unpack binaries into
 | **Process lifecycle** | Forces hourly restart (`RuntimeMaxSec = "1h"`) | Tracks `PIDFile=/run/nfqws3.pid` with `Restart=on-failure`, `ExecReload`, and idempotent firewall cleanup |
 | **Router / Gateway support** | Desktop/host OUTPUT chain only | Supports `lanInterfaces` (`IFACE_LAN`), `wanInterfaces` (`IFACE_WAN`), and `flowOffload` |
 | **Runtime closure isolation** | Unwrapped upstream scripts | `makeWrapper` with deterministic `PATH` and CA bundle |
-| **Nixpkgs option compatibility** | Baseline | Drop-in compatible (`enable`, `package`, `params`, `whitelist`, `blacklist`, `qnum`, `configureFirewall`, `httpSupport`, `httpMode`, `udpSupport`, `udpPorts`) |
+| **Nixpkgs option names** | Baseline | Accepts the same option names (`enable`, `package`, `params`, `whitelist`, `blacklist`, `qnum`, `configureFirewall`, `httpSupport`, `httpMode`, `udpSupport`, `udpPorts`); **defaults and some semantics differ**, see [Migrating from nixpkgs](#migrating-from-nixpkgs-serviceszapret) |
 
 ---
 
@@ -87,15 +87,31 @@ sudo nixos-rebuild switch
 
 ---
 
+## Migrating from nixpkgs' `services.zapret`
+
+The option *names* match, so most configurations evaluate unchanged, but the
+behaviour is **not** identical. Review these before switching:
+
+| Option | nixpkgs default | `zapret-nix` default | Effect |
+| --- | --- | --- | --- |
+| `udpSupport` | `false` | `true` | UDP (QUIC) is redirected to nfqueue unless you set `false`. |
+| `udpPorts` | `[ ]` | `[ "443" ]` | Port 443/UDP is processed by default. |
+| `httpSupport` | `false` (adds port 80 when `true`) | `true` (keeps port 80 from `tcpPorts`, never adds it) | `tcpPorts` is authoritative here. |
+| `strategy` / `params` empty | no strategy | built-in upstream-like default + warning | Traffic on the configured ports is processed with default desync. |
+| `networking.nftables.enable` | assertion failure | supported | |
+| restart policy | hourly `RuntimeMaxSec` | `Restart=on-failure` | |
+
+---
+
 ## Module Options (`services.zapret`)
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enable` | `bool` | `false` | Enable the Zapret DPI bypass service (`nfqws`). Replaces nixpkgs' `services/networking/zapret.nix`. |
 | `package` | `package` | Flake `default` | Zapret package to use. Defaults to this flake's wrapped `zapret` package (`v72.13`). |
-| `strategy` | `listOf str` | `[ ]` | List of complete `nfqws` filter groups. Joined with `--new` and `<HOSTLIST>` (unless `<HOSTLIST>` or `<HOSTLIST_NOAUTO>` is already present). |
+| `strategy` | `listOf str` | `[ ]` | List of complete `nfqws` filter groups. Joined with `--new` and `<HOSTLIST>` (unless `<HOSTLIST>` or `<HOSTLIST_NOAUTO>` is already present). If `strategy` and `params` are both empty, a built-in default (mirroring upstream's stock `NFQWS_OPT`: TCP 80, TCP 443, UDP 443) is used and an evaluation **warning** is shown. |
 | `params` | `listOf str` | `[ ]` | Flat `nfqws` argument list (compatible with nixpkgs' `services.zapret.params`) joined into a single filter group. |
-| `extraArgs` | `listOf str` | `[ ]` | Extra arguments appended verbatim to `NFQWS_OPT` (e.g. `["--debug"]`). |
+| `extraArgs` | `listOf str` | `[ ]` | Extra arguments appended to the last group of `NFQWS_OPT` (e.g. `["--debug"]`). Shell-escaped in the generated config. |
 | `whitelist` | `listOf str` | `[ ]` | Domains written to `/var/lib/zapret/ipset/zapret-hosts-user.txt`. Automatically switches default `filterMode` to `"hostlist"`. |
 | `blacklist` | `listOf str` | `[ ]` | Excluded domains written to `/var/lib/zapret/ipset/zapret-hosts-user-exclude.txt`. |
 | `filterMode` | `enum` | `"none"` or `"hostlist"` | Upstream `MODE_FILTER`: `"none"`, `"hostlist"`, `"autohostlist"`, or `"ipset"`. Defaults to `"hostlist"` if `whitelist` or `blacklist` is non-empty. |
@@ -104,13 +120,13 @@ sudo nixos-rebuild switch
 | `autohostlist.failTime` | `int` | `60` | Failure counter window in seconds (`AUTOHOSTLIST_FAIL_TIME`). |
 | `autohostlist.debug` | `bool` | `false` | Log `autohostlist` positive detections (`AUTOHOSTLIST_DEBUGLOG=1`). |
 | `firewallBackend` | `enum` | `"nftables"` or `"iptables"` | Firewall backend used by upstream `start-fw`/`stop-fw` scripts. Automatically defaults to `"nftables"` when `networking.nftables.enable = true`. |
-| `configureFirewall` | `bool` | `true` | Apply and remove firewall rules (`INIT_APPLY_FW`) on service start/stop. |
+| `configureFirewall` | `bool` | `true` | Apply and remove firewall rules (`INIT_APPLY_FW`) on service start/stop. When `false`, the unit never touches the firewall, not even on stop. |
 | `tcpPorts` | `listOf str` | `["80" "443"]` | TCP ports or ranges redirected to nfqueue (`NFQWS_PORTS_TCP`). |
 | `udpPorts` | `listOf str` | `["443"]` | UDP ports or ranges redirected to nfqueue (`NFQWS_PORTS_UDP`). |
-| `httpSupport` | `bool` | `true` | Keep port `80` in `NFQWS_PORTS_TCP` (nixpkgs compatibility). |
+| `httpSupport` | `bool` | `true` | Keep port `80` in `NFQWS_PORTS_TCP`; `false` removes it. Never adds `80` if it is absent from `tcpPorts`. |
 | `httpMode` | `enum` | `"first"` | `"first"` (connbytes packet limiter) or `"full"` (`NFQWS_PORTS_TCP_KEEPALIVE=80`). |
-| `udpSupport` | `bool` | `true` | Enable UDP port redirection to nfqueue (nixpkgs compatibility). |
-| `queueNum` / `qnum` | `int` | `200` | `nfqueue` queue number (`0`–`65535`). `qnum` is provided as a nixpkgs compatibility alias. |
+| `udpSupport` | `bool` | `true` | Enable UDP port redirection to nfqueue. |
+| `queueNum` / `qnum` | `int` | `200` | `nfqueue` queue number (`0`–`65535`). `qnum` is an alias using nixpkgs' option name. |
 | `enableIPv6` | `bool` | `false` | Also install IPv6 firewall rules (`DISABLE_IPV6=0`). |
 | `flowOffload` | `enum` | `"donttouch"` | Upstream `FLOWOFFLOAD` mode (`"donttouch"`, `"none"`, `"software"`, `"hardware"`). |
 | `lanInterfaces` | `listOf str` | `[ ]` | LAN network interfaces (`IFACE_LAN`) for router/gateway deployments. |
@@ -150,9 +166,19 @@ nix flake check --print-build-logs
 nix fmt
 ```
 
-The automated NixOS VM test (`nix/test.nix`) boots two virtual machines:
-1. **`machine` (`nftables` + `IPv6` + `autohostlist` + Flake package):** Verifies that `zapret.service` starts and tracks `nfqws`, `/var/lib/zapret/config` contains the generated options and port lists, `<HOSTLIST_NOAUTO>` is preserved without duplicating `<HOSTLIST>`, flat `params` arguments are joined into a filter group, `/var/lib/zapret/ipset/zapret-hosts-auto.txt` is owned by `nobody` (`0600`), `net.netfilter.nf_conntrack_tcp_be_liberal` is enabled (`1`) on start and reset (`0`) on stop, both IPv4 and IPv6 rules exist in `table inet zapret`, `systemctl reload zapret` succeeds, and stopping/restarting cleanly removes and re-applies firewall rules.
-2. **`nixpkgsPackage` (`iptables` + `hostlist` + `pkgs.zapret`):** Verifies drop-in compatibility with `pkgs.zapret`, the `iptables` mangle `POSTROUTING` NFQUEUE rules (`--queue-num 210`), `httpSupport = false`, `configureFirewall = true`, and declarative `whitelist`/`blacklist` (`MODE_FILTER=hostlist`).
+The automated NixOS VM test (`nix/test.nix`) boots five virtual machines:
+1. **`machine` (`nftables` + `IPv6` + `autohostlist` + Flake package):** `zapret.service` starts and tracks `nfqws`; the generated `/var/lib/zapret/config` (ports, strategy groups, `extraArgs`, no duplicated `<HOSTLIST>`); auto-hostlist ownership; `nf_conntrack_tcp_be_liberal` on start/stop; IPv4 and IPv6 rules in `table inet zapret`; `systemctl reload` (SIGHUP) keeps the **same `MainPID`** and rules; clean stop/start lifecycle.
+2. **`nixpkgsPackage` (`iptables` + `hostlist` + `pkgs.zapret`):** works with `pkgs.zapret`, `iptables` mangle `NFQUEUE` rules (`--queue-num 210`), `httpSupport = false`, `whitelist`/`blacklist`.
+3. **`defaults` (only `enable = true`):** the documented built-in strategy and `filterMode = "none"` are what gets generated.
+4. **`router`:** `lanInterfaces`, `wanInterfaces`, `flowOffload`, and `extraConfig` reach the config and the nftables ruleset.
+5. **`nofw` (`configureFirewall = false`):** no rules on start, and foreign rules in `table inet zapret` survive stopping the service.
+
+---
+
+## Acknowledgements
+
+- [bol-van/zapret](https://github.com/bol-van/zapret) by bol-van and contributors, the DPI bypass software this flake packages.
+- The Nixpkgs contributors: `nix/package.nix` and the option names of `nix/module.nix` build on the `zapret` package and `services.zapret` module in [NixOS/nixpkgs](https://github.com/NixOS/nixpkgs). Their MIT copyright notice is retained in [LICENSE.md](./LICENSE.md).
 
 ---
 
