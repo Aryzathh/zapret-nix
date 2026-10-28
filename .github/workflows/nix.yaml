@@ -1,0 +1,42 @@
+name: Nix CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+jobs:
+  check:
+    name: Nix Flake Check & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable KVM for NixOS VM tests
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Show Flake Outputs
+        run: nix flake show --all-systems
+
+      - name: Build Package
+        run: |
+          nix build .#default --print-build-logs
+          ./result/bin/nfqws --version
+          rm -f result
+
+      - name: Run Flake Checks (including NixOS VM test)
+        run: nix flake check --print-build-logs
