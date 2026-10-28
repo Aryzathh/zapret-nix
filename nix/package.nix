@@ -93,6 +93,13 @@ stdenv.mkDerivation (finalAttrs: {
       --replace-fail "trap sigint_cleanup INT" "trap sigint_cleanup INT TERM" \
       --replace-fail "trap sigint INT" "trap sigint INT TERM"
 
+    # blockcheck re-executes itself through sudo when not run as root.  sudo's
+    # secure_path would replace the wrapper's PATH with the host's, silently
+    # swapping the pinned runtime closure (netcat, curl, ...) for whatever the
+    # host ships, so carry PATH across explicitly.
+    substituteInPlace "$out/share/zapret/common/elevate.sh" \
+      --replace-fail 'exec sudo -E sh "$exe"' 'exec sudo -E env "PATH=$PATH" sh "$exe"'
+
     find "$out/share/zapret" -type f \
       \( -name '*.sh' -o -path '*/init.d/sysv/zapret' \) -print0 \
       | xargs -0 -r sed -i '1s|^#!/bin/sh$|#!${bash}/bin/bash|'
